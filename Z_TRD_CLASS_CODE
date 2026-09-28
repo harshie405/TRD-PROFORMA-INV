@@ -1,0 +1,1097 @@
+*&---------------------------------------------------------------------*
+*& Development ID : ZDDE-00086438                                      *
+*& Functional Spec: ZFSE-00086437                                      *
+*& Description    : TRD Billing (Proforma)  Form print output for US   *
+*& Form: TRD  Billing (Proforma)  Print Output                         *
+*&       ZCOMV_TRD_INVOICE_FORM_US                                     *
+*&---------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&                                                                     *
+*&  Who             Date         CR          Text                      *
+*& JAIMIAA1      16-JUL-2024   1100251573  Initial Version             *
+*&---------------------------------------------------------------------*
+METHOD get_header_details.
+
+  CONSTANTS: lc_re           TYPE parvw          VALUE 'RE',
+             lc_we           TYPE parvw          VALUE 'WE',
+             lc_slash        TYPE char1          VALUE '/',
+             lc_repid        TYPE progname       VALUE 'ZCOMV_TRD_PROFORMA',
+             lc_ship_remarks TYPE zconst_name    VALUE 'SHIP_REMARKS',
+             lc_end_use      TYPE zconst_name    VALUE 'END_USE',
+             lc_invo_rem     TYPE zconst_name    VALUE 'INVOICEREMARKS',
+             lc_addnl_rem    TYPE zconst_name    VALUE 'ADDITIONALREMARKS',
+             lc_pref_origin  TYPE zconst_name    VALUE 'PREF_ORIGIN',
+             lc_sign         TYPE char1          VALUE 'I',
+             lc_option       TYPE char2          VALUE 'EQ',
+             lc_en           TYPE zconst_name    VALUE 'LANG_CODE_EN',
+             lc_exemption    TYPE zconst_name    VALUE 'TAX_EXEMPTION_TEXT',
+             lc_73           TYPE char2          VALUE '73',
+             lc_to           TYPE char2          VALUE 'TO',
+             lc_bo           TYPE char2          VALUE 'BO',
+             lc_form_env     TYPE progname       VALUE 'ZFORM_ENVIROMENT',
+             lc_const	       TYPE zconst         VALUE 'TEST',
+             lc_counter	     TYPE zcounter       VALUE '001',
+             lc_truck        TYPE versart        VALUE '01',
+             lc_ltl          TYPE versart        VALUE 'LT',
+             lc_parcel       TYPE versart        VALUE 'PR',
+             lc_kg           TYPE t006-msehi     VALUE 'KG',
+             lc_status       TYPE hu_status      VALUE '0060'.
+
+  DATA: lr_land1        TYPE RANGE OF t005t-land1,
+        lr_adrnr        TYPE RANGE OF adrc-addrnumber,
+        lv_country      TYPE          char2,
+        lv_country_val  TYPE          char2,
+        lv_gross_weight TYPE          brgew_15,
+        lv_net_weight   TYPE          ntgew_15,
+        lv_brgew        TYPE          brgew_15,
+        lv_ntgew        TYPE          ntgew_15,
+        lv_unit_in      TYPE          gewei,
+        lv_spras        TYPE          spras.
+
+  DATA: lt_selpar  TYPE          /bobf/t_frw_query_selparam,
+        lt_key     TYPE          /bobf/t_frw_key,
+        lt_doc_ref TYPE          /scmtms/t_tor_docref_k,
+        lt_root    TYPE TABLE OF /scmtms/s_tor_root_k,
+        lo_srv_tor TYPE REF TO   /bobf/if_tra_service_manager.
+
+  CLEAR us_form.
+
+  lv_country = ls_vbdkr-landtx.
+
+*--Get operation details
+  SELECT repid,
+         const,
+         value
+    FROM zconstants_com
+    INTO TABLE @DATA(lt_remarks)
+    WHERE repid EQ @lc_repid
+    ORDER BY const, counter.
+  IF sy-subrc EQ 0.
+    "Get language
+    lv_spras = VALUE #( lt_remarks[ const = lc_en ]-value OPTIONAL ).
+
+    "Shipping Remarks
+    DATA(ls_remarks) = VALUE #( lt_remarks[ const = lc_ship_remarks ] OPTIONAL ).
+    IF ls_remarks IS NOT INITIAL.
+      us_form-hdr-ship_remarks-tdname = ls_vbdkr-vbeln.
+      us_form-hdr-ship_remarks-tdspras = lv_spras.
+      SPLIT ls_remarks-value AT lc_slash INTO us_form-hdr-ship_remarks-tdid us_form-hdr-ship_remarks-tdobject.
+    ENDIF.
+    CLEAR ls_remarks.
+
+*-- Mode of transport
+    SELECT tvro~vsart
+      FROM tvro AS tvro
+      INNER JOIN likp AS likp ON likp~route = tvro~route
+      INTO @DATA(lv_vsart)
+      UP TO 1 ROWS
+      WHERE likp~vbeln = @ls_vbdkr-vbeln_vl
+      ORDER BY likp~route, tvro~vsart.
+    ENDSELECT.
+    IF lv_vsart IS NOT INITIAL.
+      SELECT SINGLE shippingtype, shippingtypename
+        FROM i_shippingtypetext
+        WHERE  shippingtype = @lv_vsart
+        AND language = @lv_spras
+        INTO @DATA(ls_trans_mode).
+      IF sy-subrc = 0 AND ls_trans_mode IS NOT INITIAL.
+        IF ls_trans_mode-shippingtype = lc_truck OR
+           ls_trans_mode-shippingtype = lc_ltl OR
+           ls_trans_mode-shippingtype = lc_parcel.
+          us_form-hdr-trans_mode = TEXT-001.
+        ELSE.
+          us_form-hdr-trans_mode =  ls_trans_mode-shippingtypename .
+        ENDIF.
+      ENDIF.
+    ENDIF.
+    CLEAR lv_vsart.
+
+**-- Study Code Text
+    us_form-hdr-study_code = ls_vbdkr-/ctco/study_id_bld.
+
+*-- Invoice Remarks.
+    ls_remarks = VALUE #( lt_remarks[ const = lc_invo_rem ] OPTIONAL ).
+    IF ls_remarks IS NOT INITIAL.
+      us_form-hdr-invo_remarks-name = ls_vbdkr-vbeln.
+      us_form-hdr-invo_remarks-language = lv_spras.
+      SPLIT ls_remarks-value AT lc_slash INTO us_form-hdr-invo_remarks-id us_form-hdr-invo_remarks-object.
+    ENDIF.
+    CLEAR ls_remarks.
+
+*-- Additional Remarks
+    ls_remarks = VALUE #( lt_remarks[ const = lc_addnl_rem ] OPTIONAL ).
+    IF ls_remarks IS NOT INITIAL.
+      us_form-hdr-addnl_remarks-tdname = ls_vbdkr-vbeln.
+      us_form-hdr-addnl_remarks-tdspras = lv_spras.
+      SPLIT ls_remarks-value AT lc_slash INTO us_form-hdr-addnl_remarks-tdid
+                                              us_form-hdr-addnl_remarks-tdobject.
+    ENDIF.
+    CLEAR ls_remarks.
+
+**-- Get Tax Exemption text -- Footer
+    ls_remarks = VALUE #( lt_remarks[ const = lc_exemption value+0(2) = lv_country ] OPTIONAL ).
+    IF ls_remarks IS NOT INITIAL.
+      SPLIT ls_remarks-value AT lc_slash INTO lv_country_val us_form-hdr-taxex.
+    ENDIF.
+    CLEAR: ls_remarks,lv_country_val.
+
+**-- Get End Use Policy -- Footer
+    ls_remarks = VALUE #( lt_remarks[ const = lc_end_use ] OPTIONAL ).
+    IF ls_remarks IS NOT INITIAL.
+      us_form-hdr-f_remarks-tdname = ls_vbdkr-vbeln.
+      us_form-hdr-f_remarks-tdspras = lv_spras.
+      SPLIT ls_remarks-value AT lc_slash INTO us_form-hdr-f_remarks-tdid us_form-hdr-f_remarks-tdobject.
+    ENDIF.
+    CLEAR ls_remarks.
+
+**-- Get Preferential Origin Text -- Footer
+    ls_remarks = VALUE #( lt_remarks[ const = lc_pref_origin ] OPTIONAL ).
+    IF ls_remarks IS NOT INITIAL.
+      us_form-hdr-pref_origin-tdname = ls_vbdkr-vbeln.
+      us_form-hdr-pref_origin-tdspras = lv_spras.
+      SPLIT ls_remarks-value AT lc_slash INTO us_form-hdr-pref_origin-tdid us_form-hdr-pref_origin-tdobject.
+    ENDIF.
+    CLEAR ls_remarks.
+  ENDIF.
+
+*--Get incoterm
+  IF ls_vbdkr-inco2 IS NOT INITIAL.
+    us_form-hdr-incot = |{ ls_vbdkr-inco1 } { lc_slash } { ls_vbdkr-inco2 }|.
+  ELSE.
+    us_form-hdr-incot = |{ ls_vbdkr-inco1 }|.
+  ENDIF.
+
+*-- Get terms of payment
+  IF ls_vbdkr-zterm IS NOT INITIAL.
+    SELECT SINGLE vtext
+      INTO @DATA(lv_vtext)
+      FROM tvzbt
+      WHERE spras = @lv_spras
+      AND   zterm = @ls_vbdkr-zterm.
+    IF sy-subrc = 0.
+      us_form-hdr-dzterm_bez = lv_vtext.
+      CLEAR lv_vtext.
+    ENDIF.
+  ENDIF.
+
+*--Get plant details
+  SELECT SINGLE adrnr,
+                land1,
+                waers,
+                ort01
+    FROM t001
+    INTO @DATA(ls_t001)
+    WHERE bukrs = @ls_vbdkr-bukrs.
+
+  IF sy-subrc = 0 AND ls_t001 IS NOT INITIAL.
+
+    APPEND VALUE #( sign   = lc_sign
+                    option = lc_option
+                    low    = ls_t001-adrnr ) TO lr_adrnr.
+
+    APPEND VALUE #( sign   = lc_sign
+                    option = lc_option
+                    low    = ls_t001-land1 ) TO lr_land1.
+  ENDIF.
+
+*--Get partner details
+  SELECT a~vbeln,
+         a~parvw,
+         a~adrnr,
+         a~kunnr,
+         b~stceg
+    FROM vbpa AS a
+    LEFT OUTER JOIN kna1 AS b ON a~kunnr = b~kunnr
+    INTO TABLE @DATA(lt_vbpa)
+    WHERE vbeln = @ls_vbdkr-vbeln
+    AND parvw IN ( @lc_re, @lc_we )
+    ORDER BY a~vbeln.
+  IF sy-subrc EQ 0 AND lt_vbpa IS NOT INITIAL.
+*--Get VAT registration number
+    DATA(lv_vat_reg) = VALUE #( lt_vbpa[ 1 ]-stceg OPTIONAL ).
+    us_form-hdr-stceg_ag = lv_vat_reg.
+
+    LOOP AT lt_vbpa ASSIGNING FIELD-SYMBOL(<fs_vbpa>).
+      APPEND VALUE #( sign   = lc_sign
+                      option = lc_option
+                      low    = <fs_vbpa>-adrnr ) TO lr_adrnr.
+    ENDLOOP.
+  ENDIF.
+
+* Fetching Bill-to Account
+  us_form-hdr-bill_to_acc = ls_vbdkr-kunre. "bill-to-acc
+* Fetching Ship-to Account
+  us_form-hdr-ship_to_acc = ls_vbdkr-kunwe. "Ship-to-party
+
+*--Get partner address details
+  IF lr_adrnr[] IS NOT INITIAL.
+    SELECT addrnumber,
+           tel_number,
+           fax_number,
+           country,
+           region,
+           name1,
+           name2,
+           house_num1,
+           street,
+           str_suppl1,
+           post_code1,
+           city1
+      FROM adrc
+      INTO TABLE @DATA(lt_adrc)
+      WHERE addrnumber IN @lr_adrnr.
+
+    IF sy-subrc = 0 AND lt_adrc[] IS NOT INITIAL.
+      DATA(ls_adrc) = VALUE #( lt_adrc[ addrnumber = ls_t001-adrnr ] OPTIONAL ).
+      IF ls_adrc IS NOT INITIAL.
+        us_form-hdr-cc_name1 = |{ ls_adrc-name1 }|.
+        IF ls_adrc-street IS NOT INITIAL.
+          us_form-hdr-cc_adrnr = |{ us_form-hdr-cc_adrnr }{ ls_adrc-street }{ cl_abap_char_utilities=>newline }|.
+        ENDIF.
+        IF ls_adrc-str_suppl1 IS NOT INITIAL.
+          us_form-hdr-cc_adrnr = |{ us_form-hdr-cc_adrnr }{ ls_adrc-str_suppl1 }{ cl_abap_char_utilities=>newline }|.
+        ENDIF.
+        IF ls_adrc-post_code1 IS NOT INITIAL.
+          us_form-hdr-cc_adrnr = |{ us_form-hdr-cc_adrnr }{ ls_adrc-post_code1 }{ cl_abap_char_utilities=>newline }|.
+        ENDIF.
+        IF ls_adrc-city1 IS NOT INITIAL.
+          us_form-hdr-cc_adrnr = |{ us_form-hdr-cc_adrnr }{ ls_adrc-city1 }{ cl_abap_char_utilities=>newline }|.
+        ENDIF.
+        IF ls_t001-ort01 IS NOT INITIAL.
+          us_form-hdr-cc_adrnr = |{ us_form-hdr-cc_adrnr }{ ls_t001-ort01 }|.
+        ENDIF.
+
+        APPEND VALUE #( sign   = lc_sign
+                        option = lc_option
+                        low    = ls_adrc-country ) TO lr_land1.
+
+        CLEAR ls_adrc.
+      ENDIF.
+
+      "Bill-to address
+      DATA(ls_vbpa_re) = VALUE #( lt_vbpa[ vbeln = ls_vbdkr-vbeln parvw =  lc_re ] OPTIONAL ).
+      IF ls_vbpa_re IS NOT INITIAL.
+        CLEAR: ls_adrc.
+        ls_adrc = VALUE #( lt_adrc[ addrnumber =  ls_vbpa_re-adrnr ] OPTIONAL ) .
+        IF ls_adrc IS NOT INITIAL.
+          us_form-hdr-sp_name1 = |{ ls_adrc-name1 }{ ls_adrc-name2 }|.
+          IF ls_adrc-street IS NOT INITIAL.
+            us_form-hdr-sp_adrnr = |{ us_form-hdr-sp_adrnr }{ ls_adrc-street }{ cl_abap_char_utilities=>newline }|.
+          ENDIF.
+          IF ls_adrc-house_num1 IS NOT INITIAL.
+            us_form-hdr-sp_adrnr = |{ us_form-hdr-sp_adrnr }{ ls_adrc-house_num1 }{ cl_abap_char_utilities=>newline }|.
+          ENDIF.
+          IF ls_adrc-post_code1 IS NOT INITIAL.
+            us_form-hdr-sp_adrnr = |{ us_form-hdr-sp_adrnr }{ ls_adrc-post_code1 }{ cl_abap_char_utilities=>newline }|.
+          ENDIF.
+          IF ls_adrc-street IS NOT INITIAL.
+            us_form-hdr-sp_adrnr = |{ us_form-hdr-sp_adrnr }{ ls_adrc-city1 }|.
+          ENDIF.
+
+          us_form-hdr-tel_number = ls_adrc-tel_number.
+          us_form-hdr-fax_number = ls_adrc-fax_number.
+          DATA(ls_country_re) = ls_adrc-country.
+
+          APPEND VALUE #( sign   = lc_sign
+                          option = lc_option
+                          low    = ls_adrc-country ) TO lr_land1.
+        ENDIF.
+      ENDIF.
+
+      "Ship-to/Consignee Address
+      DATA(ls_vbpa_we) = VALUE #( lt_vbpa[ vbeln = ls_vbdkr-vbeln parvw =  lc_we ] OPTIONAL ).
+      IF ls_vbpa_we IS NOT INITIAL.
+        CLEAR:ls_adrc.
+        ls_adrc = VALUE #( lt_adrc[ addrnumber =  ls_vbpa_we-adrnr ] OPTIONAL ) .
+        IF ls_adrc IS NOT INITIAL.
+
+          us_form-hdr-con_name1 = |{ ls_adrc-name1 }{ ls_adrc-name2 }|.
+          IF ls_adrc-street IS NOT INITIAL.
+            us_form-hdr-consgn_adrnr = |{ us_form-hdr-consgn_adrnr }{ ls_adrc-street }{ cl_abap_char_utilities=>newline }|.
+          ENDIF.
+          IF ls_adrc-house_num1 IS NOT INITIAL.
+            us_form-hdr-consgn_adrnr = |{ us_form-hdr-consgn_adrnr }{ ls_adrc-house_num1 }{ cl_abap_char_utilities=>newline }|.
+          ENDIF.
+          IF ls_adrc-post_code1 IS NOT INITIAL.
+            us_form-hdr-consgn_adrnr = |{ us_form-hdr-consgn_adrnr }{ ls_adrc-post_code1 }{ cl_abap_char_utilities=>newline }|.
+          ENDIF.
+          IF ls_adrc-city1 IS NOT INITIAL.
+            us_form-hdr-consgn_adrnr = |{ us_form-hdr-consgn_adrnr }{ ls_adrc-city1 }|.
+          ENDIF.
+
+          DATA(ls_country_we) = ls_adrc-country.
+
+          APPEND VALUE #( sign   = lc_sign
+                          option = lc_option
+                          low    = ls_adrc-country ) TO lr_land1.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDIF.
+
+*-- Get country details LANDX
+  IF lr_land1 IS NOT INITIAL AND lv_spras IS NOT INITIAL.
+    SELECT land1,
+           landx
+      FROM t005t
+      INTO TABLE @DATA(lt_t005t)
+      WHERE land1 IN @lr_land1
+        AND spras EQ @ls_remarks-value.
+
+    IF sy-subrc = 0 AND lt_t005t[] IS NOT INITIAL.
+*-- Bill to LANDX
+      DATA(ls_t005t) = VALUE #( lt_t005t[ land1 = ls_country_re ] OPTIONAL ).
+      IF ls_t005t IS NOT INITIAL.
+        us_form-hdr-sp_landx = |{ ls_t005t-landx }|.
+        CLEAR ls_t005t.
+      ENDIF.
+**-- Consignee Address LANDX
+      ls_t005t = VALUE #( lt_t005t[ land1 = ls_country_we ] OPTIONAL ).
+      IF ls_t005t IS NOT INITIAL.
+        us_form-hdr-con_landx = |{ ls_t005t-landx }|.
+        CLEAR ls_t005t.
+      ENDIF.
+
+      ls_t005t = VALUE #( lt_t005t[ land1 = ls_t001-land1 ] OPTIONAL ).
+      IF ls_t005t IS NOT INITIAL.
+        us_form-hdr-cc_landx = ls_t005t-landx.
+        CLEAR ls_t005t.
+      ENDIF.
+    ENDIF.
+    CLEAR ls_remarks.
+  ENDIF.
+
+*-- Get Transport Order number
+  TRY.
+
+      lo_srv_tor = /bobf/cl_tra_serv_mgr_factory=>get_service_manager( /scmtms/if_tor_c=>sc_bo_key ).
+
+      APPEND VALUE #( attribute_name = /scmtms/if_tor_c=>sc_query_attribute-docreference-docreference_elements-btd_id
+                      option = lc_option
+                      sign   = lc_sign
+                      low    = ls_vbdkr-vbeln_vl ) TO lt_selpar.
+
+      APPEND VALUE #( attribute_name = /scmtms/if_tor_c=>sc_query_attribute-docreference-docreference_elements-btd_tco
+                      option = lc_option
+                      sign   = lc_sign
+                      low    = lc_73 ) TO lt_selpar.
+
+      CALL METHOD lo_srv_tor->query
+        EXPORTING
+          iv_query_key            = /scmtms/if_tor_c=>sc_query-docreference-docreference_elements
+          it_selection_parameters = lt_selpar
+        IMPORTING
+          et_key                  = lt_key.
+
+      IF lt_key IS NOT INITIAL.
+        CALL METHOD lo_srv_tor->retrieve
+          EXPORTING
+            iv_node_key = /scmtms/if_tor_c=>sc_node-docreference
+            it_key      = lt_key
+          IMPORTING
+            et_data     = lt_doc_ref.
+
+        CLEAR: lt_key.
+        IF lt_doc_ref IS NOT INITIAL.
+          LOOP AT lt_doc_ref ASSIGNING FIELD-SYMBOL(<fs_doc_ref>).
+            APPEND VALUE #( key = <fs_doc_ref>-root_key ) TO lt_key.
+          ENDLOOP.
+
+          CALL METHOD lo_srv_tor->retrieve
+            EXPORTING
+              iv_node_key = /scmtms/if_tor_c=>sc_node-root
+              it_key      = lt_key
+            IMPORTING
+              et_data     = lt_root.
+        ENDIF.
+      ENDIF.
+    CATCH /bobf/cx_frw_contrct_violation.
+      CLEAR lt_selpar.
+  ENDTRY.
+
+  IF us_form-hdr-trans_mode EQ TEXT-001.
+    us_form-hdr-tor_id = VALUE #( lt_root[ tor_cat = lc_to ]-tor_id OPTIONAL ).
+  ELSE.
+    us_form-hdr-tor_id = VALUE #( lt_root[ tor_cat = lc_bo ]-tor_id OPTIONAL ).
+  ENDIF.
+
+*Get Handling unit for Delivery - Total Gross and Net weight
+  IF ls_vbdkr-vbeln_vl IS NOT INITIAL.
+    SELECT vpobjkey, brgew, ntgew, gewei
+    INTO TABLE @DATA(lt_total_weights)
+    FROM vekp
+    WHERE vpobjkey = @ls_vbdkr-vbeln_vl
+    AND status <> @lc_status.
+  ENDIF.
+**Populate delivery Handling unit total gross and net weight.
+  IF lt_total_weights IS NOT INITIAL.
+    LOOP AT lt_total_weights ASSIGNING FIELD-SYMBOL(<lf_totalwt>).
+      lv_brgew += <lf_totalwt>-brgew.
+      lv_ntgew += <lf_totalwt>-ntgew.
+      lv_unit_in = us_form-hdr-gewei_max = <lf_totalwt>-gewei.
+    ENDLOOP.
+  ELSE.
+    lv_brgew = ls_vbdkr-brgew.
+    lv_ntgew = ls_vbdkr-ntgew.
+    lv_unit_in = us_form-hdr-gewei_max = ls_vbdkr-gewei.
+  ENDIF.
+
+  IF lv_unit_in NE lc_kg.
+**Gross Weight in KG
+    CALL METHOD zcomv_cl_trd_invoice_form_us=>convert_units
+      EXPORTING
+        iv_input    = lv_brgew
+        iv_unit_in  = lv_unit_in
+        iv_unit_out = lc_kg
+      IMPORTING
+        ev_output   = lv_gross_weight.
+    IF lv_gross_weight IS NOT INITIAL.
+      us_form-hdr-gewei_max = lc_kg.
+      WRITE: lv_gross_weight TO us_form-hdr-brgew UNIT us_form-hdr-gewei_max.
+      CONDENSE us_form-hdr-brgew NO-GAPS.
+      us_form-hdr-brgew = |{ us_form-hdr-brgew } { us_form-hdr-gewei_max }|.
+    ENDIF.
+**Net Weight in KG
+    CALL METHOD zcomv_cl_trd_invoice_form_us=>convert_units
+      EXPORTING
+        iv_input    = lv_ntgew
+        iv_unit_in  = lv_unit_in
+        iv_unit_out = lc_kg
+      IMPORTING
+        ev_output   = lv_net_weight.
+    IF lv_net_weight IS NOT INITIAL.
+      us_form-hdr-gewei_max = lc_kg.
+      WRITE: lv_net_weight TO us_form-hdr-ntgew UNIT us_form-hdr-gewei_max.
+      CONDENSE us_form-hdr-ntgew NO-GAPS.
+      us_form-hdr-ntgew = |{ us_form-hdr-ntgew } { us_form-hdr-gewei_max }|.
+    ENDIF.
+  ELSE.
+    WRITE: lv_brgew TO us_form-hdr-brgew UNIT us_form-hdr-gewei_max.
+    CONDENSE us_form-hdr-brgew NO-GAPS.
+    us_form-hdr-brgew = |{ us_form-hdr-brgew } { us_form-hdr-gewei_max }|.
+    WRITE: lv_ntgew TO us_form-hdr-ntgew UNIT us_form-hdr-gewei_max.
+    CONDENSE us_form-hdr-ntgew NO-GAPS.
+    us_form-hdr-ntgew = |{ us_form-hdr-ntgew } { us_form-hdr-gewei_max }|.
+  ENDIF.
+
+*--Print TEST in form for Dev and Quality system
+  SELECT SINGLE value INTO @DATA(lv_value)
+    FROM zconstants
+    WHERE repid   = @lc_form_env
+      AND const   = @lc_const
+      AND counter = @lc_counter.
+  IF sy-subrc = 0 AND lv_value IS NOT INITIAL.
+    us_form-hdr-test  = TEXT-010.
+  ELSE.
+    CLEAR : us_form-hdr-test.
+  ENDIF.
+
+ENDMETHOD.
+
+*&---------------------------------------------------------------------*
+*& Development ID : ZDDE-00086438                                      *
+*& Functional Spec: ZFSE-00086437                                      *
+*& Description    : TRD Billing (Proforma)  Form print output for US   *
+*& Form: TRD  Billing (Proforma)  Print Output                         *
+*&       ZCOMV_TRD_INVOICE_FORM_US                                     *
+*&---------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&                                                                     *
+*&  Who             Date         CR          Text                      *
+*& JAIMIAA1      16-JUL-2024   1100251573  Initial Version             *
+*&---------------------------------------------------------------------*
+METHOD get_item_details.
+
+  CONSTANTS:
+    lc_slash     TYPE char1         VALUE '/',
+    lc_comma     TYPE char1         VALUE ',',
+    lc_sign      TYPE char1         VALUE 'I',
+    lc_option    TYPE char2         VALUE 'EQ',
+    lc_per       TYPE char3         VALUE 'Per',
+    lc_repid     TYPE progname      VALUE 'ZCOMV_TRD_PROFORMA',
+    lc_itm_rem   TYPE zconst_nam    VALUE 'ITEMREMARKS',
+    lc_hand_ins  TYPE zconst_nam    VALUE 'HANDLING_INSTR',
+    lc_ancl_cst  TYPE zconst_nam    VALUE 'ANCL_COST',
+    lc_trnsp_cst TYPE zconst_nam    VALUE 'TRNSP_COST',
+    lc_alias     TYPE zconst_nam    VALUE 'ZZALIASTYPE',
+    lc_mat_desc  TYPE zconst_nam    VALUE 'MAT_DESC',
+    lc_ppu       TYPE zconst_nam    VALUE 'PRICEPERUNIT',
+    lc_en        TYPE zconst_name   VALUE 'LANG_CODE_EN',
+    lc_ctsty     TYPE /sapsll/ctsty VALUE '01',
+    lc_koaid     TYPE koaid         VALUE 'D',
+    lc_kposn     TYPE kposn         VALUE '000000'.
+
+  DATA: ls_item       TYPE zcomv_st_trd_inv_form_itm_us,
+        ls_batch_info TYPE zcomv_st_trd_batch_details,
+        lr_land1      TYPE RANGE OF landx,
+        lr_lifnr      TYPE RANGE OF lifnr,
+        lv_kbetr      TYPE p        DECIMALS 2,
+        lr_alias      TYPE RANGE OF zaliastype_de,
+        lr_ppu_kschl  TYPE RANGE OF kschl,
+        lt_tline      TYPE STANDARD TABLE OF tline,
+        lv_name       TYPE tdobname,
+        lv_tdobject   TYPE tdobject,
+        lv_tdid       TYPE tdid,
+        lv_spras      TYPE spras,
+        lv_aubel      TYPE vbeln_va,
+        lv_aupos      TYPE posnr_va,
+        lv_hsdat      TYPE char11,
+        lv_vfdat      TYPE char11,
+        lv_subtot     TYPE netwr.
+
+*--Get constants
+  SELECT const,
+         value
+    FROM zconstants_com
+    INTO TABLE @DATA(lt_remarks)
+    WHERE repid EQ @lc_repid
+    ORDER BY const, counter.
+  IF sy-subrc = 0.
+    "Get the conditions from zconstants table
+    DATA(lv_ancl_kschl) = VALUE #( lt_remarks[ const = lc_ancl_cst ]-value OPTIONAL ).
+    DATA(lv_trnsp_kschl) = VALUE #( lt_remarks[ const = lc_trnsp_cst ]-value OPTIONAL ).
+    lr_alias = VALUE #( FOR ls_const IN lt_remarks WHERE ( const = lc_alias ) ( sign = 'I' option = 'EQ' low = ls_const-value ) ).
+    lr_ppu_kschl = VALUE #( FOR ls_const IN lt_remarks WHERE ( const = lc_ppu ) ( sign = 'I' option = 'EQ' low = ls_const-value ) ).
+    "Get language
+    lv_spras = VALUE #( lt_remarks[ const = lc_en ]-value OPTIONAL ).
+  ENDIF.
+
+  DATA(lt_batch) = bil_prt_com_cust-item_detail.
+  DELETE lt_batch WHERE vbdpr-charg IS INITIAL.
+
+  IF lt_batch IS NOT INITIAL.
+*--Get plant specific data for material
+    SELECT matnr,
+           werks,
+           stawn,
+           herkl
+      FROM marc
+      INTO TABLE @DATA(lt_marc)
+      FOR ALL ENTRIES IN @lt_batch
+      WHERE matnr EQ @lt_batch-vbdpr-matnr
+        AND werks EQ @lt_batch-vbdpr-werks.
+
+    IF sy-subrc = 0 AND lt_marc[] IS NOT INITIAL.
+      LOOP AT lt_marc ASSIGNING FIELD-SYMBOL(<lfs_marc>).
+        APPEND VALUE #( sign   = lc_sign
+                        option = lc_option
+                        low    = <lfs_marc>-herkl ) TO lr_land1.
+      ENDLOOP.
+    ENDIF.
+
+*--Get batch details
+    SELECT matnr,
+           charg,
+           herkl,
+           lifnr,
+           cuobj_bm,
+           licha,
+           hsdat,
+           vfdat
+      FROM mch1
+      INTO TABLE @DATA(lt_mch1)
+      FOR ALL ENTRIES IN @lt_batch
+      WHERE matnr EQ @lt_batch-vbdpr-matnr
+        AND charg EQ @lt_batch-vbdpr-charg.
+    IF sy-subrc = 0 AND lt_mch1[] IS NOT INITIAL.
+      LOOP AT lt_mch1 ASSIGNING FIELD-SYMBOL(<ls_mch1>).
+
+        APPEND VALUE #( sign   = lc_sign
+                        option = lc_option
+                        low    = <ls_mch1>-herkl ) TO lr_land1.
+
+        APPEND VALUE #( sign   = lc_sign
+                        option = lc_option
+                        low    = <ls_mch1>-lifnr ) TO lr_lifnr.
+      ENDLOOP.
+      DELETE lr_lifnr WHERE low IS INITIAL.
+      "fetch address details
+      IF lr_lifnr IS NOT INITIAL.
+        SELECT a~lifnr, a~adrnr, b~name1, b~street, b~house_num1, b~post_code1, b~city1, b~country
+          INTO TABLE @DATA(lt_manu_addr)
+          FROM lfa1 AS a
+          INNER JOIN adrc AS b ON a~adrnr = b~addrnumber
+          WHERE a~lifnr IN @lr_lifnr.
+        IF sy-subrc = 0.
+          LOOP AT lt_manu_addr ASSIGNING FIELD-SYMBOL(<lfs_manu_addr>).
+            APPEND VALUE #( sign   = lc_sign
+                            option = lc_option
+                            low    = <lfs_manu_addr>-country ) TO lr_land1.
+          ENDLOOP.
+        ENDIF.
+      ENDIF.
+
+    ENDIF.
+
+*-- Customs Tarrif No
+    SELECT maritc~matnr, maritc~ccngn
+      FROM /sapsll/maritc  AS maritc
+      INNER JOIN /sapsll/tunos AS tunos ON tunos~stcts = maritc~stcts
+      INTO TABLE @DATA(lt_custom_tariff)
+      FOR ALL ENTRIES IN @lt_batch
+      WHERE tunos~ctsty = @lc_ctsty
+      AND maritc~matnr EQ @lt_batch-vbdpr-matnr.
+    IF sy-subrc NE 0.
+      CLEAR lt_custom_tariff.
+    ENDIF.
+
+*-- Storage Condition
+    SELECT a~matnr,b~rbtxt
+           INTO TABLE @DATA(lt_rbtxt)
+           FROM mara AS a
+           INNER JOIN t142t AS b ON a~raube = b~raube
+           FOR ALL ENTRIES IN @lt_batch
+           WHERE a~matnr = @lt_batch-vbdpr-matnr.
+    IF sy-subrc = 0.
+      SORT lt_rbtxt BY matnr.
+    ENDIF.
+
+*-- PCN Code
+    SELECT cfg AS matnr, plant, batch AS charg, pcnid
+      INTO TABLE @DATA(lt_pcn)
+      FROM /ctco/i_cfgbatchdata AS a
+      FOR ALL ENTRIES IN @lt_batch
+      WHERE a~cfg = @lt_batch-vbdpr-matnr
+      AND   a~batch = @lt_batch-vbdpr-charg
+      ORDER BY PRIMARY KEY.
+    IF sy-subrc <> 0.
+      CLEAR lt_pcn.
+    ENDIF.
+  ENDIF.
+
+  SORT lr_land1 BY low.
+  DELETE ADJACENT DUPLICATES FROM lr_land1 COMPARING low.
+  DELETE lr_land1 WHERE low IS INITIAL.
+*--Get country details
+  IF lr_land1[] IS NOT INITIAL.
+    SELECT land1,
+           landx
+      FROM t005t
+      INTO TABLE @DATA(lt_t005t)
+      WHERE land1 IN @lr_land1
+      AND spras EQ @lv_spras
+      ORDER BY land1.
+    IF sy-subrc NE 0.
+      CLEAR lt_t005t.
+    ENDIF.
+  ENDIF.
+
+*-- Get pricing data
+  SELECT knumv,
+         kposn,
+         kbetr,
+         kwert,
+         waers,
+         kpein,
+         kmein,
+         kschl
+    FROM prcd_elements
+    INTO TABLE @DATA(lt_prcd_elements)
+    WHERE knumv EQ @bil_prt_com_cust-head_detail-vbdkr-knumv
+    ORDER BY knumv, kschl.
+  IF sy-subrc NE 0.
+    CLEAR lt_prcd_elements.
+  ENDIF.
+
+  IF bil_prt_com_cust-item_detail[] IS NOT INITIAL.
+*-- Get Material Master - Map synonyms
+    SELECT matnr, zzaliastype, zzaliasvalue
+      INTO TABLE @DATA(lt_zmapsyn)
+      FROM zmapsyn
+      FOR ALL ENTRIES IN @bil_prt_com_cust-item_detail
+      WHERE matnr = @bil_prt_com_cust-item_detail-vbdpr-matnr
+      AND   zzaliastype IN @lr_alias
+      ORDER BY PRIMARY KEY.
+    IF sy-subrc NE 0.
+      CLEAR lt_zmapsyn.
+    ENDIF.
+
+    IF lt_prcd_elements IS NOT INITIAL.
+*-- Get Ancillary Cost
+      IF lv_ancl_kschl IS NOT INITIAL.
+        DATA(lt_ancl_cost) = lt_prcd_elements.
+        DELETE lt_ancl_cost WHERE kschl NE lv_ancl_kschl+0(4).
+        DATA(lv_lines_ancl) = lines( lt_ancl_cost ).
+        "If ancillary cost is at header and item both, only consider sum of item ancillary costs
+        IF lv_lines_ancl > 1.
+          DELETE lt_ancl_cost WHERE kposn IS INITIAL OR kposn EQ lc_kposn.
+        ENDIF.
+        LOOP AT lt_ancl_cost ASSIGNING FIELD-SYMBOL(<lfs_ancl_cost>).
+          us_form-hdr-ancl_cst += <lfs_ancl_cost>-kwert.
+        ENDLOOP.
+      ENDIF.
+
+*-- Get Transport Cost
+      IF lv_trnsp_kschl IS NOT INITIAL.
+        DATA(lt_trnsp_cost) = lt_prcd_elements.
+        DELETE lt_trnsp_cost WHERE kschl NE lv_trnsp_kschl+0(4).
+        "If transport cost is at header and item both, only consider sum of item transport costs
+        DATA(lv_lines_trnsp) = lines( lt_trnsp_cost ).
+        IF lv_lines_trnsp > 1.
+          DELETE lt_trnsp_cost WHERE kposn IS INITIAL OR kposn EQ lc_kposn.
+        ENDIF.
+        LOOP AT lt_trnsp_cost ASSIGNING FIELD-SYMBOL(<lfs_trnsp_cost>).
+          us_form-hdr-trnsp_cst += <lfs_trnsp_cost>-kwert.
+        ENDLOOP.
+      ENDIF.
+
+    ENDIF.
+
+    CLEAR lv_subtot.
+*--Prepare item data
+    LOOP AT bil_prt_com_cust-item_detail ASSIGNING FIELD-SYMBOL(<ls_item_detail>).
+      IF <ls_item_detail>-vbdpr-aubel = lv_aubel AND <ls_item_detail>-vbdpr-aupos = lv_aupos.
+        CONTINUE.
+      ELSE.
+        lv_aubel = <ls_item_detail>-vbdpr-aubel.
+        lv_aupos = <ls_item_detail>-vbdpr-aupos.
+      ENDIF.
+      CLEAR lv_name.
+      "used for read_text
+      lv_name = |{ <ls_item_detail>-vbdpr-vbeln }| & |{ <ls_item_detail>-vbdpr-posnr }|.
+      ls_item-posnr = <ls_item_detail>-vbdpr-posnr.
+      ls_item-matnr = <ls_item_detail>-vbdpr-matnr.
+
+*-- Get Batch Info
+      "nested loop is required here as all the batches for one item have to be considered
+      LOOP AT lt_batch ASSIGNING FIELD-SYMBOL(<lfs_batch>) WHERE vbdpr-aubel = <ls_item_detail>-vbdpr-aubel
+                                                             AND vbdpr-aupos = <ls_item_detail>-vbdpr-aupos.
+        ls_batch_info-batch = <lfs_batch>-vbdpr-charg.
+
+        DATA(ls_marc) = VALUE #( lt_marc[ matnr = <lfs_batch>-vbdpr-matnr
+                                          werks = <lfs_batch>-vbdpr-werks ] OPTIONAL ).
+        IF ls_marc IS NOT INITIAL.
+          ls_batch_info-cust_tarrif = VALUE #( lt_custom_tariff[ matnr = <lfs_batch>-vbdpr-matnr ]-ccngn OPTIONAL ).
+        ENDIF.
+        CLEAR ls_marc.
+*-- Get Batch Details
+        DATA(ls_mch1) = VALUE #( lt_mch1[ matnr = <lfs_batch>-vbdpr-matnr
+                                          charg = <lfs_batch>-vbdpr-charg ] OPTIONAL ).
+        IF ls_mch1 IS NOT INITIAL.
+*-- Get country of origin
+          ls_batch_info-country = VALUE #( lt_t005t[ land1 = ls_mch1-herkl ]-landx OPTIONAL ).
+*-- Vendor batch
+          ls_batch_info-vendor_batch = ls_mch1-licha.
+*-- Manufacturer
+          DATA(ls_manu_addr) = VALUE #( lt_manu_addr[ lifnr = ls_mch1-lifnr ] OPTIONAL ).
+          IF ls_manu_addr IS NOT INITIAL.
+            ls_batch_info-manufacturer = |{ ls_batch_info-manufacturer }{ ls_manu_addr-name1 } { lc_comma }|.
+            IF ls_manu_addr-street IS NOT INITIAL.
+              ls_batch_info-manufacturer = |{ ls_batch_info-manufacturer } { ls_manu_addr-street }|.
+            ENDIF.
+            IF ls_manu_addr-house_num1 IS NOT INITIAL.
+              ls_batch_info-manufacturer = |{ ls_batch_info-manufacturer } { ls_manu_addr-house_num1 }|.
+            ENDIF.
+            IF ls_manu_addr-post_code1 IS NOT INITIAL.
+              ls_batch_info-manufacturer = |{ ls_batch_info-manufacturer } { ls_manu_addr-post_code1 }|.
+            ENDIF.
+            IF ls_manu_addr-city1 IS NOT INITIAL.
+              ls_batch_info-manufacturer = |{ ls_batch_info-manufacturer } { ls_manu_addr-city1 }|.
+            ENDIF.
+            DATA(lv_manu_cntry) = VALUE #( lt_t005t[ land1 = ls_manu_addr-country ]-landx OPTIONAL ).
+            IF lv_manu_cntry IS NOT INITIAL.
+              ls_batch_info-manufacturer = |{ ls_batch_info-manufacturer } { lv_manu_cntry }|.
+            ENDIF.
+          ENDIF.
+
+*-- Get Manufacturing and Expiry Date
+          CALL FUNCTION 'ZCOMV_DATE_CONV_DDMMMYYYY'
+            EXPORTING
+              i_datum = ls_mch1-hsdat
+            IMPORTING
+              e_date  = lv_hsdat.
+
+          CALL FUNCTION 'ZCOMV_DATE_CONV_DDMMMYYYY'
+            EXPORTING
+              i_datum = ls_mch1-vfdat
+            IMPORTING
+              e_date  = lv_vfdat.
+
+          ls_batch_info-mfdexp = |{ lv_hsdat } { lc_slash } { lv_vfdat }|.
+          CLEAR: lv_hsdat, lv_vfdat.
+
+        ENDIF.
+        CLEAR: ls_mch1, ls_manu_addr, lv_manu_cntry.
+
+*-- Get PCN ID
+        ls_batch_info-pcnid = VALUE #( lt_pcn[ matnr = <lfs_batch>-vbdpr-matnr
+                                               charg = <lfs_batch>-vbdpr-charg ]-pcnid OPTIONAL ).
+
+*-- Quantity
+        ls_batch_info-quan = <lfs_batch>-vbdpr-fkimg.
+        ls_item-fkimg += ls_batch_info-quan.
+*-- UOM
+        ls_batch_info-uom = <lfs_batch>-vbdpr-vrkme.
+        ls_item-vrkme = ls_batch_info-uom.
+*-- Net Price
+        ls_item-netwr += <lfs_batch>-vbdpr-brtwr.
+
+*-- Price per unit
+        IF lr_ppu_kschl IS NOT INITIAL.
+          LOOP AT lr_ppu_kschl ASSIGNING FIELD-SYMBOL(<lfs_ppu_kschl>).
+            DATA(ls_prcd) = VALUE #( lt_prcd_elements[ kposn = <lfs_batch>-vbdpr-posnr
+                                                       kschl = <lfs_ppu_kschl>-low+0(4) ] OPTIONAL ).
+            IF ls_prcd IS NOT INITIAL.
+              EXIT.
+            ENDIF.
+          ENDLOOP.
+          IF ls_prcd IS NOT INITIAL.
+            CLEAR lv_kbetr.
+            lv_kbetr = ls_prcd-kbetr.
+            ls_item-kbetr += lv_kbetr.
+            IF ls_prcd-kmein IS NOT INITIAL AND ls_item-per_unit IS INITIAL.
+              CALL FUNCTION 'CONVERSION_EXIT_CUNIT_OUTPUT'
+                EXPORTING
+                  input          = ls_prcd-kmein
+                  language       = lv_spras
+                IMPORTING
+                  output         = ls_prcd-kmein
+                EXCEPTIONS
+                  unit_not_found = 1
+                  OTHERS         = 2.
+              IF sy-subrc = 0.
+                ls_item-per_unit = |{ lc_per } { ls_prcd-kpein } { ls_prcd-kmein }|.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+          CLEAR: ls_prcd.
+        ENDIF.
+
+        APPEND ls_batch_info TO ls_item-batch_info.
+        CLEAR ls_batch_info.
+      ENDLOOP.
+
+      "If there are no batch details for the item, directly take the billing item details
+      IF ls_item-batch_info IS INITIAL.
+*-- Net price
+        ls_item-netwr = <ls_item_detail>-vbdpr-brtwr.
+*-- Quantity
+        ls_item-fkimg = <ls_item_detail>-vbdpr-fkimg.
+*-- UOM
+        ls_item-vrkme = <ls_item_detail>-vbdpr-vrkme.
+*-- Price per unit
+        IF lr_ppu_kschl IS NOT INITIAL.
+          CLEAR ls_prcd.
+          LOOP AT lr_ppu_kschl ASSIGNING <lfs_ppu_kschl>.
+            ls_prcd = VALUE #( lt_prcd_elements[ kposn = <lfs_batch>-vbdpr-posnr
+                                                 kschl = <lfs_ppu_kschl>-low+0(4) ] OPTIONAL ).
+            IF ls_prcd IS NOT INITIAL.
+              EXIT.
+            ENDIF.
+          ENDLOOP.
+          IF ls_prcd IS NOT INITIAL.
+            CLEAR lv_kbetr.
+            lv_kbetr = ls_prcd-kbetr.
+            ls_item-kbetr = lv_kbetr.
+            IF ls_prcd-kmein IS NOT INITIAL AND ls_item-per_unit IS INITIAL.
+              CALL FUNCTION 'CONVERSION_EXIT_CUNIT_OUTPUT'
+                EXPORTING
+                  input          = ls_prcd-kmein
+                  language       = lv_spras
+                IMPORTING
+                  output         = ls_prcd-kmein
+                EXCEPTIONS
+                  unit_not_found = 1
+                  OTHERS         = 2.
+              IF sy-subrc = 0.
+                ls_item-per_unit = |{ lc_per } { ls_prcd-kpein } { ls_prcd-kmein }|.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+          CLEAR: ls_prcd.
+        ENDIF.
+      ENDIF.
+
+*-- Material Description
+      CLEAR: lv_tdid, lv_tdobject.
+      DATA(ls_remarks) = VALUE #( lt_remarks[ const = lc_mat_desc ] OPTIONAL ).
+      IF ls_remarks IS NOT INITIAL.
+        SPLIT ls_remarks-value AT lc_slash INTO lv_tdid lv_tdobject.
+        IF lv_tdid IS NOT INITIAL AND lv_tdobject IS NOT INITIAL.
+          CALL FUNCTION 'READ_TEXT'
+            EXPORTING
+              id                      = lv_tdid
+              language                = lv_spras
+              name                    = lv_name
+              object                  = lv_tdobject
+            TABLES
+              lines                   = lt_tline
+            EXCEPTIONS
+              id                      = 1
+              language                = 2
+              name                    = 3
+              not_found               = 4
+              object                  = 5
+              reference_check         = 6
+              wrong_access_to_archive = 7
+              OTHERS                  = 8.
+          IF sy-subrc = 0.
+            ls_item-maktx = VALUE #( lt_tline[ 1 ]-tdline OPTIONAL ).
+          ENDIF.
+          CLEAR: lv_tdid, lv_tdobject.
+        ENDIF.
+
+        "If material description is not not found in text, check zmapsyn
+        IF ls_item-maktx IS INITIAL.
+          "Alias values are sorted by counter value from zconstants_com
+          "Nested loops is required here as all values have to be checked
+          LOOP AT lr_alias ASSIGNING FIELD-SYMBOL(<lfs_alias>).
+            ls_item-maktx = VALUE #( lt_zmapsyn[ matnr = <ls_item_detail>-vbdpr-matnr
+                                            zzaliastype = <lfs_alias>-low ]-zzaliasvalue OPTIONAL ).
+            IF ls_item-maktx IS NOT INITIAL.
+              EXIT.
+            ENDIF.
+          ENDLOOP.
+
+          "If material description is not found in zmapsyn, copy arktx
+          IF ls_item-maktx IS INITIAL.
+            ls_item-maktx = <ls_item_detail>-vbdpr-arktx.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+      CLEAR: ls_remarks.
+
+*-- Item Remarks
+      CLEAR: lv_tdid, lv_tdobject.
+      ls_remarks = VALUE #( lt_remarks[ const = lc_itm_rem ] OPTIONAL ).
+      IF ls_remarks IS NOT INITIAL.
+        SPLIT ls_remarks-value AT lc_slash INTO lv_tdid lv_tdobject.
+        IF lv_tdid IS NOT INITIAL AND lv_tdobject IS NOT INITIAL.
+          CALL FUNCTION 'READ_TEXT'
+            EXPORTING
+              id                      = lv_tdid
+              language                = lv_spras
+              name                    = lv_name
+              object                  = lv_tdobject
+            TABLES
+              lines                   = lt_tline
+            EXCEPTIONS
+              id                      = 1
+              language                = 2
+              name                    = 3
+              not_found               = 4
+              object                  = 5
+              reference_check         = 6
+              wrong_access_to_archive = 7
+              OTHERS                  = 8.
+          IF sy-subrc = 0.
+            "Nested loop is needed so all the lines of the Item Remarks are printed
+            LOOP AT lt_tline ASSIGNING FIELD-SYMBOL(<lfs_tline>).
+              ls_item-item_remarks = |{ ls_item-item_remarks }| & |{ <lfs_tline>-tdline }|.
+            ENDLOOP.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+      CLEAR ls_remarks.
+
+*-- Storage Condition
+      DATA(lv_rbtxt) = VALUE #( lt_rbtxt[ matnr = <ls_item_detail>-vbdpr-matnr ]-rbtxt OPTIONAL ).
+      IF lv_rbtxt IS NOT INITIAL.
+        ls_item-rbtxt = lv_rbtxt.
+      ENDIF.
+      CLEAR: lv_rbtxt.
+
+
+*-- Handling Instruction
+      CLEAR: lv_tdid, lv_tdobject.
+      ls_remarks = VALUE #( lt_remarks[ const = lc_hand_ins ] OPTIONAL ).
+      IF ls_remarks IS NOT INITIAL.
+        SPLIT ls_remarks-value AT lc_slash INTO lv_tdid lv_tdobject.
+        IF lv_tdid IS NOT INITIAL AND lv_tdobject IS NOT INITIAL.
+          CALL FUNCTION 'READ_TEXT'
+            EXPORTING
+              id                      = lv_tdid
+              language                = lv_spras
+              name                    = lv_name
+              object                  = lv_tdobject
+            TABLES
+              lines                   = lt_tline
+            EXCEPTIONS
+              id                      = 1
+              language                = 2
+              name                    = 3
+              not_found               = 4
+              object                  = 5
+              reference_check         = 6
+              wrong_access_to_archive = 7
+              OTHERS                  = 8.
+          IF sy-subrc = 0.
+            "Nested loop is needed so all the lines of the handling instruction are printed
+            LOOP AT lt_tline ASSIGNING <lfs_tline>.
+              ls_item-handling_instr = |{ ls_item-handling_instr }|  &  |{ <lfs_tline>-tdline }|.
+            ENDLOOP.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+      CLEAR ls_remarks.
+
+*-- Invoice Subtotal calculation
+      lv_subtot += <ls_item_detail>-vbdpr-brtwr.
+
+      APPEND ls_item TO us_form-itm.
+      CLEAR ls_item.
+    ENDLOOP.
+  ENDIF.
+*-- Invoice Subtotal
+  us_form-hdr-netwr = lv_subtot.
+*-- VAT
+  us_form-hdr-mwsbk = bil_prt_com_cust-head_detail-vbdkr-mwsbk.
+
+*-- VAT Rate
+  SELECT kposn AS kposn, SUM( kbetr ) AS kbetr
+    UP TO 1 ROWS
+    INTO @DATA(ls_vat)
+    FROM prcd_elements
+    WHERE knumv = @bil_prt_com_cust-head_detail-vbdkr-knumv
+    AND   kstat = @space
+    AND   koaid = @lc_koaid
+    GROUP BY kposn
+    ORDER BY kbetr DESCENDING.
+  ENDSELECT.
+  IF ls_vat IS NOT INITIAL.
+    us_form-hdr-vat_rate = ls_vat-kbetr.
+  ENDIF.
+
+*-- Invoice Total
+  us_form-hdr-inv_total = us_form-hdr-netwr + us_form-hdr-ancl_cst + us_form-hdr-trnsp_cst + us_form-hdr-mwsbk.
+
+ENDMETHOD.
+
+*&---------------------------------------------------------------------*
+*& Development ID : ZDDE-00086438                                      *
+*& Functional Spec: ZFSE-00086437                                      *
+*& Description    : TRD Billing (Proforma)  Form print output for US   *
+*& Form: TRD  Billing (Proforma)  Print Output                         *
+*&       ZCOMV_TRD_INVOICE_FORM_US                                     *
+*&---------------------------------------------------------------------*
+*& Change Log:                                                         *
+*&                                                                     *
+*&  Who             Date         CR          Text                      *
+*& JAIMIAA1      16-JUL-2024   1100251573  Initial Version             *
+*&---------------------------------------------------------------------*
+  METHOD convert_units.
+
+    CLEAR ev_output.
+
+    CALL FUNCTION 'UNIT_CONVERSION_SIMPLE'
+      EXPORTING
+        input                = iv_input
+        unit_in              = iv_unit_in
+        unit_out             = iv_unit_out
+      IMPORTING
+        output               = ev_output
+      EXCEPTIONS
+        conversion_not_found = 1
+        division_by_zero     = 2
+        input_invalid        = 3
+        output_invalid       = 4
+        overflow             = 5
+        type_invalid         = 6
+        units_missing        = 7
+        unit_in_not_found    = 8
+        unit_out_not_found   = 9
+        OTHERS               = 10.
+    IF sy-subrc NE 0.
+      CLEAR ev_output.
+    ENDIF.
+  ENDMETHOD.
